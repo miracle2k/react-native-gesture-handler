@@ -1,9 +1,7 @@
 import React from 'react';
 import {
   findNodeHandle,
-  requireNativeComponent,
   Animated,
-  NativeModules,
   ScrollView,
   Slider,
   Switch,
@@ -15,46 +13,18 @@ import {
   StyleSheet,
   FlatList,
   Platform,
+  processColor,
+  Touchable,
 } from 'react-native';
-import processColor from 'react-native/Libraries/StyleSheet/processColor';
-import Touchable from 'react-native/Libraries/Components/Touchable/Touchable';
 import deepEqual from 'fbjs/lib/areEqual';
 import PropTypes from 'prop-types';
 
+import GestureHandlerButton from './GestureHandlerButton';
+import GestureHandlerModule from './GestureHandlerModule';
 import gestureHandlerRootHOC from './gestureHandlerRootHOC';
-
-const RNGestureHandlerModule = NativeModules.RNGestureHandlerModule;
-
-/* Wrap JS responder calls and notify gesture handler manager */
-const { UIManager } = NativeModules;
-const {
-  setJSResponder: oldSetJSResponder,
-  clearJSResponder: oldClearJSResponder,
-} = UIManager;
-UIManager.setJSResponder = (tag, blockNativeResponder) => {
-  RNGestureHandlerModule.handleSetJSResponder(tag, blockNativeResponder);
-  oldSetJSResponder(tag, blockNativeResponder);
-};
-UIManager.clearJSResponder = () => {
-  RNGestureHandlerModule.handleClearJSResponder();
-  oldClearJSResponder();
-};
-
-// Add gesture specific events to genericDirectEventTypes object exported from UIManager
-// native module.
-// Once new event types are registered with react it is possible to dispatch these
-// events to all kind of native views.
-UIManager.genericDirectEventTypes = {
-  ...UIManager.genericDirectEventTypes,
-  onGestureHandlerEvent: { registrationName: 'onGestureHandlerEvent' },
-  onGestureHandlerStateChange: {
-    registrationName: 'onGestureHandlerStateChange',
-  },
-};
-
-const State = RNGestureHandlerModule.State;
-
-const Directions = RNGestureHandlerModule.Direction;
+import Directions from './Directions';
+import State from './State';
+import PlatformConstants from './PlatformConstants';
 
 let handlerTag = 1;
 const handlerIDToTag = {};
@@ -171,6 +141,8 @@ function createHandler(
   customNativeProps = {}
 ) {
   class Handler extends React.Component {
+    static displayName = handlerName;
+
     static propTypes = {
       ...GestureHandlerPropTypes,
       ...propTypes,
@@ -178,6 +150,7 @@ function createHandler(
 
     constructor(props) {
       super(props);
+      this._handlerName = handlerName;
       this._handlerTag = handlerTag++;
       this._config = {};
       if (props.id) {
@@ -227,7 +200,7 @@ function createHandler(
     };
 
     componentWillUnmount() {
-      RNGestureHandlerModule.dropGestureHandler(this._handlerTag);
+      GestureHandlerModule.dropGestureHandler(this._handlerTag);
       if (this._updateEnqueued) {
         clearImmediate(this._updateEnqueued);
       }
@@ -255,12 +228,12 @@ function createHandler(
           this._update();
         });
       }
-      RNGestureHandlerModule.createGestureHandler(
+      GestureHandlerModule.createGestureHandler(
         handlerName,
         this._handlerTag,
         this._config
       );
-      RNGestureHandlerModule.attachGestureHandler(
+      GestureHandlerModule.attachGestureHandler(
         this._handlerTag,
         this._viewTag
       );
@@ -270,7 +243,7 @@ function createHandler(
       const viewTag = findNodeHandle(this._viewNode);
       if (this._viewTag !== viewTag) {
         this._viewTag = viewTag;
-        RNGestureHandlerModule.attachGestureHandler(this._handlerTag, viewTag);
+        GestureHandlerModule.attachGestureHandler(this._handlerTag, viewTag);
       }
       this._update();
     }
@@ -283,7 +256,7 @@ function createHandler(
       );
       if (!deepEqual(this._config, newConfig)) {
         this._config = newConfig;
-        RNGestureHandlerModule.updateGestureHandler(
+        GestureHandlerModule.updateGestureHandler(
           this._handlerTag,
           this._config
         );
@@ -298,10 +271,7 @@ function createHandler(
         config
       );
       this._config = newConfig;
-      RNGestureHandlerModule.updateGestureHandler(
-        this._handlerTag,
-        this._config
-      );
+      GestureHandlerModule.updateGestureHandler(this._handlerTag, this._config);
     }
 
     render() {
@@ -352,7 +322,7 @@ function createHandler(
       }
 
       const child = React.Children.only(this.props.children);
-      let children = child.props.children;
+      let children = GestureHandlerModule.getChildren.apply(this);
       if (
         Touchable.TOUCH_TARGET_DEBUG &&
         child.type &&
@@ -368,8 +338,9 @@ function createHandler(
           })
         );
       }
+
       return React.cloneElement(
-        child,
+        GestureHandlerModule.render.apply(this),
         {
           ref: this._refHandler,
           collapsable: false,
@@ -421,8 +392,7 @@ class ForceTouchFallback extends React.Component {
   }
 }
 
-const ForceTouchGestureHandler = NativeModules.PlatformConstants
-  .forceTouchAvailable
+const ForceTouchGestureHandler = PlatformConstants.forceTouchAvailable
   ? createHandler(
       'ForceTouchGestureHandler',
       {
@@ -435,7 +405,7 @@ const ForceTouchGestureHandler = NativeModules.PlatformConstants
   : ForceTouchFallback;
 
 ForceTouchGestureHandler.forceTouchAvailable =
-  NativeModules.PlatformConstants.forceTouchAvailable || false;
+  PlatformConstants.forceTouchAvailable || false;
 
 const LongPressGestureHandler = createHandler(
   'LongPressGestureHandler',
@@ -673,7 +643,7 @@ function createNativeWrapper(Component, config = {}) {
             typeof source[methodName] === 'function' &&
             this[methodName] === undefined
           ) {
-            this[methodName] = source[methodName].bind(node);
+            this[methodName] = source[methodName];
           }
         }
         source = Object.getPrototypeOf(source);
@@ -735,13 +705,10 @@ State.print = state => {
   }
 };
 
-const RawButton = createNativeWrapper(
-  requireNativeComponent('RNGestureHandlerButton', null),
-  {
-    shouldCancelWhenOutside: false,
-    shouldActivateOnStart: false,
-  }
-);
+const RawButton = createNativeWrapper(GestureHandlerButton, {
+  shouldCancelWhenOutside: false,
+  shouldActivateOnStart: false,
+});
 
 /* Buttons */
 
